@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mini-NOC Dashboard</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .panel { background: white; padding: 15px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h1, h2, h3 { color: #0056b3; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: #f8f9fa; }
+        .freshness { font-size: 0.8em; color: #666; font-style: italic; }
+        .empty-message { padding: 10px; color: #856404; background-color: #fff3cd; border: 1px solid #ffeeba; border-radius: 4px; }
+        .chart-box { position: relative; height: 300px; width: 100%; margin-bottom: 25px; }
+    </style>
+    <!-- Librería local descargada -->
+    <script src="chart.umd.js"></script>
+</head>
+<body>
+
+    <h1>Mini-NOC Dashboard</h1>
+
+    <!-- Panel de Interfaces -->
+    <div class="panel">
+        <h2>Interfaces de Red</h2>
+        <div id="interfaces-freshness" class="freshness">Frescura: Cargando...</div>
+        <table id="interfaces-table">
+            <thead>
+                <tr>
+                    <th>Índice</th>
+                    <th>Descripción</th>
+                    <th>Estado Operativo</th>
+                    <th>In (bps)</th>
+                    <th>Out (bps)</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+        <div id="interfaces-empty" class="empty-message" style="display: none;">
+            No hay datos de interfaces disponibles.
+        </div>
+    </div>
+
+    <!-- Panel de Eventos Syslog -->
+    <div class="panel">
+        <h2>Últimos Eventos (Syslog)</h2>
+        <div id="syslog-freshness" class="freshness">Frescura: Cargando...</div>
+        <table id="syslog-table">
+            <thead>
+                <tr>
+                    <th>Timestamp (Local)</th>
+                    <th>Host</th>
+                    <th>Tag</th>
+                    <th>Mensaje</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+        <div id="syslog-empty" class="empty-message" style="display: none;">
+            No hay registros de syslog recientes.
+        </div>
+    </div>
+
+    <!-- Panel de Top Talkers (IPFIX) -->
+    <div class="panel">
+        <h2>Top Talkers (IPFIX - Últimos 5 min)</h2>
+        <div id="ipfix-freshness" class="freshness">Frescura: Cargando...</div>
+        <table id="ipfix-table">
+            <thead>
+                <tr>
+                    <th>IP Origen</th>
+                    <th>IP Destino</th>
+                    <th>Puerto Dest.</th>
+                    <th>Protocolo</th>
+                    <th>Total Bytes</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+        <div id="ipfix-empty" class="empty-message" style="display: none;">
+            No hay flujos IPFIX recientes.
+        </div>
+    </div>
+
+    <!-- Panel de Ancho de Banda -->
+    <div class="panel">
+        <h2>Gráficos de Ancho de Banda</h2>
+        <label for="timeRange">Rango de tiempo:</label>
+        <select id="timeRange" onchange="updateBandwidthCharts()">
+            <option value="15m">15 minutos</option>
+            <option value="1h">1 hora</option>
+            <option value="24h">24 horas</option>
+        </select>
+        <div id="chartsContainer" style="margin-top: 15px;"></div>
+    </div>
+
+    <script>
+        let charts = {};
+
+        function formatLocalTime(utcString) {
+            if (!utcString) return "Desconocido";
+            const date = new Date(utcString + (utcString.endsWith('Z') ? '' : 'Z'));
+            return date.toLocaleString('es-ES', { timeZone: 'Europe/Madrid' });
+        }
+
+        async function fetchInterfaces() {
+            try {
+                const response = await fetch('/api/snmp/interfaces');
+                const result = await response.json();
+                const tableBody = document.querySelector('#interfaces-table tbody');
+                const emptyMessage = document.getElementById('interfaces-empty');
+                const freshnessDiv = document.getElementById('interfaces-freshness');
+
+                tableBody.innerHTML = ''; 
+
+                if (!result.data || result.data.length === 0) {
+                    emptyMessage.style.display = 'block';
+                    freshnessDiv.textContent = 'Frescura: Sin datos';
+                } else {
+                    emptyMessage.style.display = 'none';
+                    freshnessDiv.textContent = `Frescura de los datos: ${formatLocalTime(result.freshness)}`;
+                    
+                    result.data.forEach(row => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td>${row.ifIndex}</td>
+                            <td>${row.descr}</td>
+                            <td>${row.ifOperStatus === 1 ? 'UP' : (row.ifOperStatus === 2 ? 'DOWN' : row.ifOperStatus)}</td>
+                            <td>${row.in_bps ? Math.round(row.in_bps) : 0}</td>
+                            <td>${row.out_bps ? Math.round(row.out_bps) : 0}</td>
+                        `;
+                        tableBody.appendChild(tr);
+                    });
+                }
+            } catch (error) {
+                console.error("Error al obtener interfaces:", error);
+            }
+        }
+
+        async function fetchSyslog() {
+            try {
+                const response = await fetch('/api/syslog');
+                const result = await response.json();
+                const tableBody = document.querySelector('#syslog-table tbody');
+                const emptyMessage = document.getElementById('syslog-empty');
+                const freshnessDiv = document.getElementById('syslog-freshness');
+
+                tableBody.innerHTML = '';
+
+                if (!result.data || result.data.length === 0) {
+                    emptyMessage.style.display = 'block';
+                    freshnessDiv.textContent = 'Frescura: Sin datos';
+                } else {
+                    emptyMessage.style.display = 'none';
+                    freshnessDiv.textContent = `Frescura de los datos: ${formatLocalTime(result.freshness)}`;
+                    
+                    result.data.forEach(row => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td>${formatLocalTime(row.ts)}</td>
+                            <td>${row.host}</td>
+                            <td>${row.tag}</td>
+                            <td>${row.message}</td>
+                        `;
+                        tableBody.appendChild(tr);
+                    });
+                }
+            } catch (error) {
+                console.error("Error al obtener syslog:", error);
+            }
+        }
+
+        async function fetchIpfix() {
+            try {
+                const response = await fetch('/api/ipfix/top-talkers?minutes=5');
+                const result = await response.json();
+                const tableBody = document.querySelector('#ipfix-table tbody');
+                const emptyMessage = document.getElementById('ipfix-empty');
+                const freshnessDiv = document.getElementById('ipfix-freshness');
+
+                tableBody.innerHTML = '';
+
+                if (!result.data || result.data.length === 0) {
+                    emptyMessage.style.display = 'block';
+                    freshnessDiv.textContent = 'Frescura: Sin datos';
+                } else {
+                    emptyMessage.style.display = 'none';
+                    freshnessDiv.textContent = `Frescura de los datos: ${formatLocalTime(result.freshness)}`;
+                    
+                    result.data.forEach(row => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = `
+                            <td>${row.source_ip || row.src_ip || 'N/A'}</td>
+                            <td>${row.destination_ip || row.dst_ip || 'N/A'}</td>
+                            <td>${row.destination_port || row.dst_port || 'N/A'}</td>
+                            <td>${row.protocol || row.proto || 'N/A'}</td>
+                            <td>${row.total_bytes || row.bytes || 0}</td>
+                        `;
+                        tableBody.appendChild(tr);
+                    });
+                }
+            } catch (error) {
+                console.error("Error al obtener IPFIX:", error);
+            }
+        }
+
+        async function updateBandwidthCharts() {
+            const range = document.getElementById("timeRange").value;
+            try {
+                const response = await fetch(`/api/snmp/bandwidth?range=${range}`);
+                const data = await response.json();
+                const container = document.getElementById("chartsContainer");
+
+                for (const [interfaceName, ifData] of Object.entries(data)) {
+                    if (!charts[interfaceName]) {
+                        const wrapper = document.createElement("div");
+                        wrapper.className = "chart-box";
+                        wrapper.innerHTML = `<h3>Interfaz: ${interfaceName}</h3><canvas id="chart-${interfaceName}"></canvas>`;
+                        container.appendChild(wrapper);
+
+                        const ctx = document.getElementById(`chart-${interfaceName}`).getContext("2d");
+                        charts[interfaceName] = new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels: ifData.timestamps,
+                                datasets: [
+                                    { label: 'Entrada (bps)', data: ifData.in, borderColor: 'green', backgroundColor: 'rgba(0,128,0,0.05)', fill: true },
+                                    { label: 'Salida (bps)', data: ifData.out, borderColor: 'blue', backgroundColor: 'rgba(0,0,255,0.05)', fill: true }
+                                ]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false
+                            }
+                        });
+                    } else {
+                        charts[interfaceName].data.labels = ifData.timestamps;
+                        charts[interfaceName].data.datasets[0].data = ifData.in;
+                        charts[interfaceName].data.datasets[1].data = ifData.out;
+                        charts[interfaceName].update();
+                    }
+                }
+            } catch (error) {
+                console.error("Error al obtener datos de ancho de banda:", error);
+            }
+        }
+
+        // Carga inicial de todos los módulos
+        fetchInterfaces();
+        fetchSyslog();
+        fetchIpfix();
+        updateBandwidthCharts();
+
+        // Refresco periódico cada 15 segundos
+        setInterval(() => {
+            fetchInterfaces();
+            fetchSyslog();
+            fetchIpfix();
+            updateBandwidthCharts();
+        }, 15000);
+    </script>
+</body>
+</html>
