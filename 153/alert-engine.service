@@ -1,0 +1,14 @@
+[Unit]
+Description=Motor de Alertas Mini NOC
+After=network.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin
+ExecStart=/home/admin/venv/bin/python /home/admin/alert_engine.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
