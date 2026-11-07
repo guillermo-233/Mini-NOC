@@ -211,6 +211,58 @@ def get_noc_health():
         "last_samples": last_samples
     }
 
+@app.get('/api/timeline')
+def get_timeline(timestamp: str, window: int = 5):
+    try:
+        # Asegurar compatibilidad de formato ISO para la conversión y corregir espacios
+        center_time_str = timestamp.replace('Z', '+00:00').replace(' ', '+')
+        center_time = datetime.fromisoformat(center_time_str)
+        
+        # Calcular el marco temporal (rango inicio y fin)
+        start_time = (center_time - timedelta(minutes=window)).isoformat()
+        end_time = (center_time + timedelta(minutes=window)).isoformat()
+        
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row  # Necesario para convertir registros a diccionarios
+        
+        # Extraer datos de SNMP
+        snmp_data = conn.execute(
+            'SELECT * FROM snmp_data WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp ASC', 
+            (start_time, end_time)
+        ).fetchall()
+        
+        # Extraer datos de Syslog
+        syslog_data = conn.execute(
+            'SELECT * FROM syslog_data WHERE timestamp BETWEEN ? AND ? ORDER BY timestamp ASC', 
+            (start_time, end_time)
+        ).fetchall()
+        
+        # Extraer datos de Flujos (usando 'ts' en lugar de 'timestamp')
+        flow_data = conn.execute(
+            'SELECT * FROM flow_data WHERE ts BETWEEN ? AND ? ORDER BY ts ASC', 
+            (start_time, end_time)
+        ).fetchall()
+        
+        conn.close()
+        
+        return {
+            "timeline_request": {
+                "center": center_time_str,
+                "window_minutes": window,
+                "range": {"start": start_time, "end": end_time}
+            },
+            "data": {
+                "snmp": [dict(row) for row in snmp_data],
+                "syslog": [dict(row) for row in syslog_data],
+                "flows": [dict(row) for row in flow_data]
+            }
+        }
+
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Formato de timestamp inválido. Usa formato ISO 8601")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
 app.mount("/", StaticFiles(directory="/home/admin/static", html=True), name="static")
 
 if __name__ == "__main__":
