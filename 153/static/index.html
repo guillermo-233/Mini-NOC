@@ -24,6 +24,13 @@
         .badge-danger { background-color: #dc3545; }
         .health-list { list-style: none; padding-left: 0; margin: 0; font-size: 0.9em; }
         .health-list li { margin-bottom: 5px; }
+        
+        /* Controles Línea Temporal */
+        .timeline-controls { margin-bottom: 15px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .timeline-controls input { padding: 6px; border: 1px solid #ccc; border-radius: 4px; }
+        .timeline-controls button { padding: 6px 15px; background-color: #0056b3; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .timeline-controls button:hover { background-color: #004494; }
+        .timeline-events-box { background: #f8f9fa; padding: 12px; border-left: 4px solid #0056b3; border-radius: 0 4px 4px 0; margin-top: 15px; }
     </style>
     <!-- Librería local descargada -->
     <script src="chart.umd.js"></script>
@@ -52,6 +59,29 @@
                     <li><strong>Flow:</strong> <span id="health-last-flow">-</span></li>
                 </ul>
             </div>
+        </div>
+    </div>
+    
+    <!-- NUEVO: Panel de Línea Temporal (Timeline) -->
+    <div class="panel">
+        <h2>Investigación de Incidentes (Timeline)</h2>
+        <div class="timeline-controls">
+            <label for="timelineTimestamp">Momento del evento:</label>
+            <input type="text" id="timelineTimestamp" placeholder="Ej: 2026-11-07T12:06:48+00:00" style="width: 250px;" value="2026-11-07T12:06:48+00:00">
+            <label for="timelineWindow">± Minutos:</label>
+            <input type="number" id="timelineWindow" value="5" style="width: 60px;">
+            <button onclick="fetchTimeline()">Analizar</button>
+        </div>
+        
+        <div class="chart-box" style="height: 300px;">
+            <canvas id="timelineChart"></canvas>
+        </div>
+        
+        <div class="timeline-events-box">
+            <strong>Eventos de Syslog en esta ventana:</strong>
+            <ul id="timeline-syslog-list" style="margin-top: 8px; margin-bottom: 0; padding-left: 20px; font-size: 0.9em; color: #444;">
+                <li>Haz clic en "Analizar" para buscar eventos.</li>
+            </ul>
         </div>
     </div>
 
@@ -131,33 +161,94 @@
 
     <script>
         let charts = {};
+        let timelineChartInstance = null; // Variable para la nueva gráfica
 
         function formatLocalTime(utcString) {
             if (!utcString || utcString === "No data" || utcString === "Error") return utcString || "Desconocido";
-    
-            // Normalizar espacio a 'T' para compatibilidad ISO
             let cleanStr = utcString.trim().replace(' ', 'T');
-    
-            // Añadir 'Z' solo si la fecha NO especifica zona horaria ('Z', '+' o '-')
             if (!cleanStr.endsWith('Z') && !cleanStr.includes('+') && !cleanStr.match(/-\d{2}:\d{2}$/)) {
                 cleanStr += 'Z';
             }
-    
             const date = new Date(cleanStr);
-            if (isNaN(date.getTime())) return utcString; // Si no se puede parsear, devuelve el string original
-    
+            if (isNaN(date.getTime())) return utcString;
             return date.toLocaleString('es-ES', { timeZone: 'Europe/Madrid' });
         }
 
+        // ==========================================
+        // NUEVA FUNCIÓN: Obtener y dibujar Timeline
+        // ==========================================
+        async function fetchTimeline() {
+            const timestamp = document.getElementById('timelineTimestamp').value;
+            const windowMin = document.getElementById('timelineWindow').value;
+            
+            if (!timestamp) return alert("Por favor, introduce un timestamp.");
+
+            try {
+                const targetTimestamp = encodeURIComponent(timestamp);
+                const response = await fetch(`/api/timeline?timestamp=${targetTimestamp}&window=${windowMin}`);
+                if (!response.ok) throw new Error("Error en la API");
+                const json = await response.json();
+                
+                renderTimelineChart(json.data);
+            } catch (error) {
+                console.error("Error al cargar la línea temporal:", error);
+                alert("No se pudo cargar la línea temporal. Comprueba que el backend esté activo.");
+            }
+        }
+
+        function renderTimelineChart(data) {
+            // Buscamos la interfaz WAN (o mostramos la primera por defecto)
+            let targetData = data.snmp.filter(item => item.descr === 'WAN');
+            if (targetData.length === 0 && data.snmp.length > 0) {
+                const firstIf = data.snmp[0].descr;
+                targetData = data.snmp.filter(item => item.descr === firstIf);
+            }
+
+            const labels = targetData.map(item => formatLocalTime(item.timestamp).split(' ')[1]); // Solo la hora
+            const dataIn = targetData.map(item => item.in_bps);
+            const dataOut = targetData.map(item => item.out_bps);
+
+            const ctx = document.getElementById('timelineChart').getContext('2d');
+            if (timelineChartInstance) timelineChartInstance.destroy();
+
+            timelineChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'Tráfico Entrada (bps)', data: dataIn, borderColor: 'rgb(75, 192, 192)', tension: 0.1, fill: false },
+                        { label: 'Tráfico Salida (bps)', data: dataOut, borderColor: 'rgb(255, 99, 132)', tension: 0.1, fill: false }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false }
+                }
+            });
+
+            // Pintar los logs debajo de la gráfica
+            const eventsList = document.getElementById('timeline-syslog-list');
+            eventsList.innerHTML = '';
+            
+            if (data.syslog && data.syslog.length > 0) {
+                data.syslog.forEach(log => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `<strong>${formatLocalTime(log.timestamp)}</strong> <span style="color: #dc3545;">[${log.severity}]</span> - ${log.message}`;
+                    eventsList.appendChild(li);
+                });
+            } else {
+                eventsList.innerHTML = '<li>No se registraron eventos en este periodo.</li>';
+            }
+        }
+
+        // ==========================================
+        // Funciones previas (Dashboard General)
+        // ==========================================
         async function fetchNocHealth() {
             try {
                 const response = await fetch('/api/health');
                 const data = await response.json();
-
-                // 1. Tamaño de la BD
                 document.getElementById('health-db-size').textContent = data.db_size_mb || 'N/A';
-
-                // 2. Servicios con etiquetas verde/rojo
                 const servicesContainer = document.getElementById('health-services');
                 servicesContainer.innerHTML = '';
                 if (data.services) {
@@ -169,16 +260,12 @@
                         servicesContainer.appendChild(badge);
                     });
                 }
-
-                // 3. Últimas muestras recibidas
                 if (data.last_samples) {
                     document.getElementById('health-last-snmp').textContent = formatLocalTime(data.last_samples.snmp);
                     document.getElementById('health-last-syslog').textContent = formatLocalTime(data.last_samples.syslog);
                     document.getElementById('health-last-flow').textContent = formatLocalTime(data.last_samples.flow);
                 }
-            } catch (error) {
-                console.error("Error al obtener la salud del NOC:", error);
-            }
+            } catch (error) { console.error("Error NOC health:", error); }
         }
 
         async function fetchInterfaces() {
@@ -188,31 +275,22 @@
                 const tableBody = document.querySelector('#interfaces-table tbody');
                 const emptyMessage = document.getElementById('interfaces-empty');
                 const freshnessDiv = document.getElementById('interfaces-freshness');
-
                 tableBody.innerHTML = ''; 
-
                 if (!result.data || result.data.length === 0) {
                     emptyMessage.style.display = 'block';
                     freshnessDiv.textContent = 'Frescura: Sin datos';
                 } else {
                     emptyMessage.style.display = 'none';
-                    freshnessDiv.textContent = `Frescura de los datos: ${formatLocalTime(result.freshness)}`;
-                    
+                    freshnessDiv.textContent = `Frescura: ${formatLocalTime(result.freshness)}`;
                     result.data.forEach(row => {
                         const tr = document.createElement('tr');
-                        tr.innerHTML = `
-                            <td>${row.ifIndex}</td>
-                            <td>${row.descr}</td>
+                        tr.innerHTML = `<td>${row.ifIndex}</td><td>${row.descr}</td>
                             <td>${row.ifOperStatus === 1 ? 'UP' : (row.ifOperStatus === 2 ? 'DOWN' : row.ifOperStatus)}</td>
-                            <td>${row.in_bps ? Math.round(row.in_bps) : 0}</td>
-                            <td>${row.out_bps ? Math.round(row.out_bps) : 0}</td>
-                        `;
+                            <td>${row.in_bps ? Math.round(row.in_bps) : 0}</td><td>${row.out_bps ? Math.round(row.out_bps) : 0}</td>`;
                         tableBody.appendChild(tr);
                     });
                 }
-            } catch (error) {
-                console.error("Error al obtener interfaces:", error);
-            }
+            } catch (error) { console.error("Error interfaces:", error); }
         }
 
         async function fetchSyslog() {
@@ -222,30 +300,20 @@
                 const tableBody = document.querySelector('#syslog-table tbody');
                 const emptyMessage = document.getElementById('syslog-empty');
                 const freshnessDiv = document.getElementById('syslog-freshness');
-
                 tableBody.innerHTML = '';
-
                 if (!result.data || result.data.length === 0) {
                     emptyMessage.style.display = 'block';
                     freshnessDiv.textContent = 'Frescura: Sin datos';
                 } else {
                     emptyMessage.style.display = 'none';
-                    freshnessDiv.textContent = `Frescura de los datos: ${formatLocalTime(result.freshness)}`;
-                    
+                    freshnessDiv.textContent = `Frescura: ${formatLocalTime(result.freshness)}`;
                     result.data.forEach(row => {
                         const tr = document.createElement('tr');
-                        tr.innerHTML = `
-                            <td>${formatLocalTime(row.ts)}</td>
-                            <td>${row.host}</td>
-                            <td>${row.tag}</td>
-                            <td>${row.message}</td>
-                        `;
+                        tr.innerHTML = `<td>${formatLocalTime(row.ts)}</td><td>${row.host}</td><td>${row.tag}</td><td>${row.message}</td>`;
                         tableBody.appendChild(tr);
                     });
                 }
-            } catch (error) {
-                console.error("Error al obtener syslog:", error);
-            }
+            } catch (error) { console.error("Error syslog:", error); }
         }
 
         async function fetchIpfix() {
@@ -255,31 +323,22 @@
                 const tableBody = document.querySelector('#ipfix-table tbody');
                 const emptyMessage = document.getElementById('ipfix-empty');
                 const freshnessDiv = document.getElementById('ipfix-freshness');
-
                 tableBody.innerHTML = '';
-
                 if (!result.data || result.data.length === 0) {
                     emptyMessage.style.display = 'block';
                     freshnessDiv.textContent = 'Frescura: Sin datos';
                 } else {
                     emptyMessage.style.display = 'none';
-                    freshnessDiv.textContent = `Frescura de los datos: ${formatLocalTime(result.freshness)}`;
-                    
+                    freshnessDiv.textContent = `Frescura: ${formatLocalTime(result.freshness)}`;
                     result.data.forEach(row => {
                         const tr = document.createElement('tr');
-                        tr.innerHTML = `
-                            <td>${row.source_ip || row.src_ip || 'N/A'}</td>
-                            <td>${row.destination_ip || row.dst_ip || 'N/A'}</td>
-                            <td>${row.destination_port || row.dst_port || 'N/A'}</td>
-                            <td>${row.protocol || row.proto || 'N/A'}</td>
-                            <td>${row.total_bytes || row.bytes || 0}</td>
-                        `;
+                        tr.innerHTML = `<td>${row.source_ip || row.src_ip || 'N/A'}</td><td>${row.destination_ip || row.dst_ip || 'N/A'}</td>
+                            <td>${row.destination_port || row.dst_port || 'N/A'}</td><td>${row.protocol || row.proto || 'N/A'}</td>
+                            <td>${row.total_bytes || row.bytes || 0}</td>`;
                         tableBody.appendChild(tr);
                     });
                 }
-            } catch (error) {
-                console.error("Error al obtener IPFIX:", error);
-            }
+            } catch (error) { console.error("Error IPFIX:", error); }
         }
 
         async function updateBandwidthCharts() {
@@ -288,14 +347,12 @@
                 const response = await fetch(`/api/snmp/bandwidth?range=${range}`);
                 const data = await response.json();
                 const container = document.getElementById("chartsContainer");
-
                 for (const [interfaceName, ifData] of Object.entries(data)) {
                     if (!charts[interfaceName]) {
                         const wrapper = document.createElement("div");
                         wrapper.className = "chart-box";
                         wrapper.innerHTML = `<h3>Interfaz: ${interfaceName}</h3><canvas id="chart-${interfaceName}"></canvas>`;
                         container.appendChild(wrapper);
-
                         const ctx = document.getElementById(`chart-${interfaceName}`).getContext("2d");
                         charts[interfaceName] = new Chart(ctx, {
                             type: 'line',
@@ -306,10 +363,7 @@
                                     { label: 'Salida (bps)', data: ifData.out, borderColor: 'blue', backgroundColor: 'rgba(0,0,255,0.05)', fill: true }
                                 ]
                             },
-                            options: {
-                                responsive: true,
-                                maintainAspectRatio: false
-                            }
+                            options: { responsive: true, maintainAspectRatio: false }
                         });
                     } else {
                         charts[interfaceName].data.labels = ifData.timestamps;
@@ -318,19 +372,19 @@
                         charts[interfaceName].update();
                     }
                 }
-            } catch (error) {
-                console.error("Error al obtener datos de ancho de banda:", error);
-            }
+            } catch (error) { console.error("Error ancho de banda:", error); }
         }
 
-        // Carga inicial de todos los módulos
+        // Carga inicial
         fetchNocHealth();
         fetchInterfaces();
         fetchSyslog();
         fetchIpfix();
         updateBandwidthCharts();
-
-        // Refresco periódico cada 15 segundos
+        
+        // El Timeline NO se refresca en bucle porque es una vista forense.
+        
+        // Refresco periódico de paneles en vivo cada 15 segundos
         setInterval(() => {
             fetchNocHealth();
             fetchInterfaces();
