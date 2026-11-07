@@ -13,7 +13,7 @@ PROTO_MAP = {'6': 'TCP', '17': 'UDP', '1': 'ICMP'}
 
 def init_db():
     """Inicializa la base de datos y crea la tabla con restricciones de unicidad para desduplicar."""
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS flow_data (

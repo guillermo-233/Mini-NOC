@@ -2,18 +2,18 @@ import time
 import sqlite3
 import re
 import os
+from datetime import datetime, timezone
 
-# Rutas de los archivos (ajusta LOG_FILE según dónde guarde rsyslog el archivo en tu Debian)
+# Rutas de los archivos con ruta absoluta
 LOG_FILE = '/var/log/remote/192.168.153.1/syslog.log'
-DB_FILE = 'mininuc.db'
+DB_FILE = '/home/admin/mininuc.db'
 
-# Expresión regular basada en el formato de tus logs
-# Captura: 1(Timestamp), 2(IP), 3(Facility.Severity), 4(Mensaje)
+# Expresión regular basada en el formato de los logs
 LOG_PATTERN = re.compile(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})\s+([\d\.]+)\s+\S+\s+([a-zA-Z0-9]+\.[a-zA-Z0-9]+)\s+(.*)$')
 
 def setup_database():
-    """Crea la base de datos y la tabla si no existen."""
-    conn = sqlite3.connect(DB_FILE)
+    """Crea la base de datos y la tabla si no existen con timeout de concurrencia."""
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS syslog_data (
@@ -48,10 +48,18 @@ def main():
             for line in follow(f):
                 match = LOG_PATTERN.match(line)
                 if match:
-                    timestamp = match.group(1)
+                    raw_timestamp = match.group(1)
                     source_ip = match.group(2)
                     severity = match.group(3)
                     message = match.group(4)
+                    
+                    # Normalizar el timestamp a UTC estandarizado
+                    try:
+                        dt = datetime.fromisoformat(raw_timestamp)
+                        # Si el log trae etiqueta +00:00 pero contiene hora local, o zona offset explícita:
+                        timestamp = dt.astimezone(timezone.utc).isoformat()
+                    except Exception:
+                        timestamp = datetime.now(timezone.utc).isoformat()
                     
                     cursor.execute('''
                         INSERT INTO syslog_data (timestamp, source_ip, severity, message)

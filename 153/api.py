@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 import datetime
 from datetime import datetime, timedelta, timezone
+import os
+import subprocess
 
 app = FastAPI(title="Mini-NOC API")
 
@@ -18,7 +20,7 @@ app.add_middleware(
 DB_FILE = '/home/admin/mininuc.db'
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=30.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -43,8 +45,6 @@ def get_interfaces_status():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Esta consulta asume que guardas el estado en snmp_data. 
-    # Deberás ajustarla a tu esquema real si es diferente.
     query = """
         SELECT if_index as ifIndex, descr, oper_status as ifOperStatus, in_bps, out_bps
         FROM snmp_data
@@ -90,7 +90,6 @@ def get_top_talkers(minutes: int = Query(5)):
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # Indicamos explícitamente que la columna de tiempo se llama 'ts'
         freshness = get_freshness(cursor, "flow_data", time_column="ts")
 
         query = """
@@ -120,7 +119,6 @@ def get_top_talkers(minutes: int = Query(5)):
 
 @app.get("/api/snmp/bandwidth")
 def get_bandwidth(range: str = "15m"):
-    # Convertir el rango de tiempo seleccionado a segundos
     if range == "15m":
         time_limit = 15 * 60
     elif range == "1h":
@@ -130,14 +128,11 @@ def get_bandwidth(range: str = "15m"):
     else:
         time_limit = 15 * 60
 
-    # Conectar a la base de datos de Mini-NOC
-    conn = sqlite3.connect('/home/admin/mininuc.db')
+    conn = sqlite3.connect('/home/admin/mininuc.db', timeout=30.0)
     cursor = conn.cursor()
     
-    # Calcular la fecha y hora límite restando los segundos al momento actual en UTC
     limit_time = (datetime.now(timezone.utc) - timedelta(seconds=time_limit)).isoformat()
     
-    # Extraer los datos históricos ya calculados por el recolector
     cursor.execute('''
         SELECT descr, timestamp, in_bps, out_bps 
         FROM snmp_data 
@@ -148,13 +143,11 @@ def get_bandwidth(range: str = "15m"):
     rows = cursor.fetchall()
     conn.close()
 
-    # Formatear la respuesta agrupada por interfaz para Chart.js
     results = {}
     for descr, timestamp, in_bps, out_bps in rows:
         if descr not in results:
             results[descr] = {"in": [], "out": [], "timestamps": []}
             
-        # Extraer solo la hora (HH:MM:SS) del timestamp ISO para limpiar el eje X del gráfico
         formatted_time = timestamp[11:19]
         
         results[descr]["timestamps"].append(formatted_time)
@@ -163,9 +156,63 @@ def get_bandwidth(range: str = "15m"):
 
     return results
 
+@app.get("/api/health")
+def get_noc_health():
+    """
+    Devuelve el tamaño de la BD, estado de los recolectores systemd y 
+    la última muestra recibida (Standard Level).
+    """
+    # 1. Tamaño físico de la BD en MB
+    db_size_mb = 0.0
+    if os.path.exists(DB_FILE):
+        db_size_mb = round(os.path.getsize(DB_FILE) / (1024 * 1024), 2)
+        
+    # 2. Estado de los servicios systemd
+    services = ["snmp-poller", "syslog-poller", "flow-poller", "alert-engine"]
+    collectors_status = {}
+    for srv in services:
+        try:
+            res = subprocess.run(["systemctl", "is-active", f"{srv}.service"], capture_output=True, text=True)
+            collectors_status[srv] = res.stdout.strip()
+        except Exception:
+            collectors_status[srv] = "unknown"
+            
+    # 3. Última muestra registrada por cada recolector
+    last_samples = {}
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        try:
+            cursor.execute("SELECT MAX(timestamp) FROM snmp_data")
+            row = cursor.fetchone()
+            last_samples["snmp"] = row[0] if row and row[0] else "No data"
+        except Exception:
+            last_samples["snmp"] = "Error"
+            
+        try:
+            cursor.execute("SELECT MAX(timestamp) FROM syslog_data")
+            row = cursor.fetchone()
+            last_samples["syslog"] = row[0] if row and row[0] else "No data"
+        except Exception:
+            last_samples["syslog"] = "Error"
+            
+        try:
+            cursor.execute("SELECT MAX(ts) FROM flow_data")
+            row = cursor.fetchone()
+            last_samples["flow"] = row[0] if row and row[0] else "No data"
+        except Exception:
+            last_samples["flow"] = "Error"
+    finally:
+        conn.close()
+
+    return {
+        "db_size_mb": f"{db_size_mb} MB",
+        "services": collectors_status,
+        "last_samples": last_samples
+    }
+
 app.mount("/", StaticFiles(directory="/home/admin/static", html=True), name="static")
+
 if __name__ == "__main__":
     import uvicorn
-    # Se ejecuta en todas las interfaces en el puerto 8080
     uvicorn.run(app, host="0.0.0.0", port=8080)
-

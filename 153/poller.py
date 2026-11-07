@@ -13,7 +13,7 @@ OIDS = {
 
 def init_db():
     """Inicializa la base de datos SQLite recomendada para entornos ligeros."""
-    conn = sqlite3.connect('/home/admin/mininuc.db')
+    conn = sqlite3.connect('/home/admin/mininuc.db', timeout=30.0)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS snmp_data (

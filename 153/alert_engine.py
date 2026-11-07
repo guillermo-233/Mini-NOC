@@ -154,6 +154,28 @@ def check_no_data():
         if entity in active_alerts:
             resolve_alert(active_alerts[entity], entity)
 
+def enforce_retention():
+    """Borra automáticamente los datos de más de 7 días (Standard Level)."""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # SNMP (columna timestamp)
+            cursor.execute("DELETE FROM snmp_data WHERE julianday(timestamp) < julianday('now', '-7 days')")
+            
+            # Syslog (columna timestamp)
+            cursor.execute("DELETE FROM syslog_data WHERE julianday(timestamp) < julianday('now', '-7 days')")
+            
+            # NetFlow/sFlow (columna ts)
+            cursor.execute("DELETE FROM flow_data WHERE julianday(ts) < julianday('now', '-7 days')")
+            
+            # Alertas resueltas (columna end_time)
+            cursor.execute("DELETE FROM alerts WHERE status = 'resolved' AND julianday(end_time) < julianday('now', '-7 days')")
+            
+            conn.commit()
+    except Exception as e:
+        print(f"[Retention Error] {e}", flush=True)
+
 def run_engine():
     print("Iniciando Motor de Alertas...")
     init_db()
@@ -163,6 +185,7 @@ def run_engine():
             check_high_bandwidth()
             check_syslog_failures()
             check_no_data()
+            enforce_retention()
         except Exception as e:
             print(f"Error en el ciclo de evaluación: {e}")
         time.sleep(30)
