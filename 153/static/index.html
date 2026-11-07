@@ -14,6 +14,16 @@
         .freshness { font-size: 0.8em; color: #666; font-style: italic; }
         .empty-message { padding: 10px; color: #856404; background-color: #fff3cd; border: 1px solid #ffeeba; border-radius: 4px; }
         .chart-box { position: relative; height: 300px; width: 100%; margin-bottom: 25px; }
+
+        /* Estilos para Salud del Sistema */
+        .health-grid { display: flex; flex-wrap: wrap; gap: 15px; margin-top: 10px; }
+        .health-col { flex: 1; min-width: 220px; background: #f8f9fa; padding: 12px; border-radius: 5px; border: 1px solid #dee2e6; }
+        .health-col h3 { margin-top: 0; margin-bottom: 8px; font-size: 1.05em; border-bottom: 1px solid #ced4da; padding-bottom: 4px; }
+        .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 0.85em; font-weight: bold; color: white; margin-right: 5px; margin-bottom: 5px; }
+        .badge-success { background-color: #28a745; }
+        .badge-danger { background-color: #dc3545; }
+        .health-list { list-style: none; padding-left: 0; margin: 0; font-size: 0.9em; }
+        .health-list li { margin-bottom: 5px; }
     </style>
     <!-- Librería local descargada -->
     <script src="chart.umd.js"></script>
@@ -21,6 +31,29 @@
 <body>
 
     <h1>Mini-NOC Dashboard</h1>
+
+    <!-- Panel de Salud del Sistema (Standard Level) -->
+    <div class="panel">
+        <h2>Salud del Sistema (NOC Health)</h2>
+        <div class="health-grid">
+            <div class="health-col">
+                <h3>Base de Datos</h3>
+                <p style="margin: 5px 0;"><strong>Tamaño en disco:</strong> <span id="health-db-size">Cargando...</span></p>
+            </div>
+            <div class="health-col">
+                <h3>Servicios Recolectores</h3>
+                <div id="health-services">Cargando...</div>
+            </div>
+            <div class="health-col">
+                <h3>Última Muestra Recibida</h3>
+                <ul class="health-list">
+                    <li><strong>SNMP:</strong> <span id="health-last-snmp">-</span></li>
+                    <li><strong>Syslog:</strong> <span id="health-last-syslog">-</span></li>
+                    <li><strong>Flow:</strong> <span id="health-last-flow">-</span></li>
+                </ul>
+            </div>
+        </div>
+    </div>
 
     <!-- Panel de Interfaces -->
     <div class="panel">
@@ -100,9 +133,52 @@
         let charts = {};
 
         function formatLocalTime(utcString) {
-            if (!utcString) return "Desconocido";
-            const date = new Date(utcString + (utcString.endsWith('Z') ? '' : 'Z'));
+            if (!utcString || utcString === "No data" || utcString === "Error") return utcString || "Desconocido";
+    
+            // Normalizar espacio a 'T' para compatibilidad ISO
+            let cleanStr = utcString.trim().replace(' ', 'T');
+    
+            // Añadir 'Z' solo si la fecha NO especifica zona horaria ('Z', '+' o '-')
+            if (!cleanStr.endsWith('Z') && !cleanStr.includes('+') && !cleanStr.match(/-\d{2}:\d{2}$/)) {
+                cleanStr += 'Z';
+            }
+    
+            const date = new Date(cleanStr);
+            if (isNaN(date.getTime())) return utcString; // Si no se puede parsear, devuelve el string original
+    
             return date.toLocaleString('es-ES', { timeZone: 'Europe/Madrid' });
+        }
+
+        async function fetchNocHealth() {
+            try {
+                const response = await fetch('/api/health');
+                const data = await response.json();
+
+                // 1. Tamaño de la BD
+                document.getElementById('health-db-size').textContent = data.db_size_mb || 'N/A';
+
+                // 2. Servicios con etiquetas verde/rojo
+                const servicesContainer = document.getElementById('health-services');
+                servicesContainer.innerHTML = '';
+                if (data.services) {
+                    Object.entries(data.services).forEach(([service, status]) => {
+                        const isOk = status === 'active';
+                        const badge = document.createElement('span');
+                        badge.className = `badge ${isOk ? 'badge-success' : 'badge-danger'}`;
+                        badge.textContent = `${service}: ${status}`;
+                        servicesContainer.appendChild(badge);
+                    });
+                }
+
+                // 3. Últimas muestras recibidas
+                if (data.last_samples) {
+                    document.getElementById('health-last-snmp').textContent = formatLocalTime(data.last_samples.snmp);
+                    document.getElementById('health-last-syslog').textContent = formatLocalTime(data.last_samples.syslog);
+                    document.getElementById('health-last-flow').textContent = formatLocalTime(data.last_samples.flow);
+                }
+            } catch (error) {
+                console.error("Error al obtener la salud del NOC:", error);
+            }
         }
 
         async function fetchInterfaces() {
@@ -248,6 +324,7 @@
         }
 
         // Carga inicial de todos los módulos
+        fetchNocHealth();
         fetchInterfaces();
         fetchSyslog();
         fetchIpfix();
@@ -255,6 +332,7 @@
 
         // Refresco periódico cada 15 segundos
         setInterval(() => {
+            fetchNocHealth();
             fetchInterfaces();
             fetchSyslog();
             fetchIpfix();
