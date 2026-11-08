@@ -3,11 +3,12 @@ Description=Mini-NOC API Server
 After=network.target
 
 [Service]
+Type=simple
 User=admin
 WorkingDirectory=/home/admin
-# Ajusta la ruta del entorno virtual si usas uno, o deja python3
-ExecStart=/usr/bin/python3 /home/admin/api.py
+ExecStart=/home/admin/venv/bin/python3 /home/admin/api.py
 Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
