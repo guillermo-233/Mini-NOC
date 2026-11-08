@@ -263,6 +263,9 @@ def get_timeline(timestamp: str, window: int = 5):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
+from alerts_api import router as alerts_router
+app.include_router(alerts_router)
+
 app.mount("/", StaticFiles(directory="/home/admin/static", html=True), name="static")
 
 if __name__ == "__main__":
