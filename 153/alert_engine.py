@@ -5,6 +5,10 @@ from datetime import datetime, timezone, timedelta
 DB_PATH = "/home/admin/mininuc.db"
 DB_TIMEOUT = 15
 
+# Interfaces que no generan alerta "Interface Down" (p. ej. ether4, desactivada a propósito
+# en la plantilla del CyberRange). Si una de ellas tiene una alerta abierta, se resuelve.
+IGNORED_INTERFACES = {'ether4'}
+
 def get_db_connection():
     return sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT)
 
@@ -68,6 +72,10 @@ def check_interface_status():
 
     current_down_entities = set()
     for descr, oper_status in latest_status:
+        if descr in IGNORED_INTERFACES:
+            if descr in active_alerts:
+                resolve_alert(active_alerts[descr], descr)
+            continue
         if str(oper_status) == '2':
             current_down_entities.add(descr)
             if descr not in active_alerts:
