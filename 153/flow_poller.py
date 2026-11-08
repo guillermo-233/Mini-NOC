@@ -1,3 +1,4 @@
+import ipaddress
 import os
 import re
 import sqlite3
@@ -17,6 +18,10 @@ FILE_RE = re.compile(r'^nfcapd\.(\d{12})$')                 # nfcapd.YYYYMMDDhhm
 DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}')
 
 PROTO_MAP = {'6': 'TCP', '17': 'UDP', '1': 'ICMP'}
+
+# Redes internas de este entorno. nfdump da la dirección original (sa/da) y la traducida por NAT (xsa/xda);
+# el host "real" de cada extremo es la que pertenece a estas redes, no la dirección WAN del router.
+INTERNAL_NETS = [ipaddress.ip_network(n) for n in ('192.168.153.0/24', '192.168.154.0/24')]
 
 INSERT_SQL = '''
     INSERT OR IGNORE INTO flow_data
@@ -68,9 +73,21 @@ def set_state(conn, name, value):
     conn.execute('INSERT OR REPLACE INTO collector_state (name, value) VALUES (?, ?)', (name, value))
 
 
+def is_internal(ip):
+    try:
+        return any(ipaddress.ip_address(str(ip).strip()) in net for net in INTERNAL_NETS)
+    except ValueError:
+        return False
+
+
 def resolve_real_ip(ip, xip):
-    """Retorna la IP traducida (xsa/xda) si existe y no es 0.0.0.0; si no, la original."""
-    if xip and str(xip).strip() not in ('0.0.0.0', '::', ''):
+    """Host interno de un extremo del flujo, teniendo en cuenta el NAT.
+    - Salida (SNAT/masquerade): ip = host interno, xip = dirección WAN del router.
+    - Entrada (DNAT):           ip = dirección WAN del router, xip = host interno.
+    Se elige la dirección que está en las redes internas; si ninguna lo está, se deja la original."""
+    if is_internal(ip):
+        return ip
+    if is_internal(xip):
         return xip
     return ip
 
