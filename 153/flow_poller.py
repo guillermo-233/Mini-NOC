@@ -1,21 +1,34 @@
-import subprocess
-import csv
-import io
+import os
+import re
 import sqlite3
+import subprocess
 import time
+from datetime import datetime, timedelta
 
 DB_FILE = '/home/admin/mininuc.db'
 NFDUMP_DIR = '/var/cache/nfdump/mikrotik'
-POLL_INTERVAL = 30  # Frecuencia de muestreo en segundos
+POLL_INTERVAL = 30          # segundos entre ciclos cuando no queda nada pendiente
+BACKFILL_MINUTES = 60       # primer arranque: solo se leen los últimos N minutos
+MAX_FILES_PER_CYCLE = 60    # tope de ficheros por ciclo (evita ráfagas de E/S tras una parada larga)
+BATCH_SIZE = 1000           # filas por transacción: la memoria queda acotada
 
-# Mapeo de códigos numéricos de protocolo a texto
+NFDUMP_FMT = 'csv:%ts,%te,%pr,%sa,%sp,%da,%dp,%pkt,%byt,%in,%out,%xsa,%xda'
+FILE_RE = re.compile(r'^nfcapd\.(\d{12})$')                 # nfcapd.YYYYMMDDhhmm (el fichero .current no encaja)
+DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}')
+
 PROTO_MAP = {'6': 'TCP', '17': 'UDP', '1': 'ICMP'}
 
+INSERT_SQL = '''
+    INSERT OR IGNORE INTO flow_data
+    (ts, te, pr, sa, sp, da, dp, pkt, byt, in_if, out_if, xsa, xda, real_src, real_dst)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+'''
+
+
 def init_db():
-    """Inicializa la base de datos y crea la tabla con restricciones de unicidad para desduplicar."""
+    """Crea las tablas. UNIQUE desduplica registros idénticos; collector_state guarda por dónde vamos."""
     conn = sqlite3.connect(DB_FILE, timeout=30.0)
-    cursor = conn.cursor()
-    cursor.execute('''
+    conn.execute('''
         CREATE TABLE IF NOT EXISTS flow_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT,
@@ -36,86 +49,124 @@ def init_db():
             UNIQUE(ts, te, pr, sa, sp, da, dp, pkt, byt, in_if, out_if, xsa, xda)
         )
     ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS collector_state (
+            name TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
     conn.commit()
     return conn
 
+
+def get_state(conn, name):
+    row = conn.execute('SELECT value FROM collector_state WHERE name = ?', (name,)).fetchone()
+    return row[0] if row else None
+
+
+def set_state(conn, name, value):
+    conn.execute('INSERT OR REPLACE INTO collector_state (name, value) VALUES (?, ?)', (name, value))
+
+
 def resolve_real_ip(ip, xip):
-    """Retorna la IP real del host interno si existe traducción NAT (xsa/xda != 0.0.0.0)."""
+    """Retorna la IP traducida (xsa/xda) si existe y no es 0.0.0.0; si no, la original."""
     if xip and str(xip).strip() not in ('0.0.0.0', '::', ''):
         return xip
     return ip
 
-def collect_flows(conn):
-    cursor = conn.cursor()
-    cmd = [
-        'nfdump',
-        '-R', NFDUMP_DIR,
-        '-q', '-N',
-        '-o', 'csv:%ts,%te,%pr,%sa,%sp,%da,%dp,%pkt,%byt,%in,%out,%xsa,%xda'
-    ]
-    
+
+def parse_line(line):
+    """Convierte una línea CSV de nfdump en una tupla lista para insertar.
+    Devuelve None para cabeceras, resúmenes, líneas vacías o malformadas."""
+    parts = [p.strip() for p in line.strip().split(',')]
+    if len(parts) != 13 or not DATE_RE.match(parts[0]):
+        return None
+    ts, te, pr_raw, sa, sp, da, dp, pkt, byt, in_if, out_if, xsa, xda = parts
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if not result.stdout:
-            return
-    except Exception as e:
-        print(f"Error al ejecutar nfdump: {e}", flush=True)
-        return
+        sp, dp, pkt, byt = int(sp), int(dp), int(pkt), int(byt)
+        in_if, out_if = int(in_if), int(out_if)
+    except ValueError:
+        return None
+    pr = PROTO_MAP.get(pr_raw, pr_raw)
+    real_src = resolve_real_ip(sa, xsa)
+    real_dst = resolve_real_ip(da, xda)
+    return (ts, te, pr, sa, sp, da, dp, pkt, byt, in_if, out_if, xsa, xda, real_src, real_dst)
 
-    csv_reader = csv.DictReader(io.StringIO(result.stdout.strip()))
-    inserted_count = 0
-    
-    for row in csv_reader:
-        # Mapear nombres de cabeceras de nfdump (firstSeen/ts, srcAddr/sa, etc.)
-        ts = row.get('firstSeen') or row.get('ts')
-        
-        # Ignorar líneas de resumen estadístico o aquellas sin timestamp
-        if not ts or 'Summary' in str(ts):
-            continue
-            
-        try:
-            te = row.get('lastSeen') or row.get('te') or ts
-            pr_raw = row.get('proto') or row.get('pr') or ''
-            # Traduce si es numérico (6, 17, 1) y déjalo como string si ya lo es
-            pr = {'6': 'TCP', '17': 'UDP', '1': 'ICMP'}.get(str(pr_raw), str(pr_raw))
-            sa = row.get('srcAddr') or row.get('sa') or ''
-            sp = int(row.get('srcPort') or row.get('sp') or 0)
-            da = row.get('dstAddr') or row.get('da') or ''
-            dp = int(row.get('dstPort') or row.get('dp') or 0)
-            pkt = int(row.get('packets') or row.get('pkt') or 0)
-            byt = int(row.get('bytes') or row.get('byt') or 0)
-            in_if = int(row.get('input') or row.get('in') or 0)
-            out_if = int(row.get('output') or row.get('out') or 0)
-            xsa = row.get('srcXIP') or row.get('xsa') or '0.0.0.0'
-            xda = row.get('dstXIP') or row.get('xda') or '0.0.0.0'
-            
-            real_src = resolve_real_ip(sa, xsa)
-            real_dst = resolve_real_ip(da, xda)
-            
-            cursor.execute('''
-                INSERT OR IGNORE INTO flow_data 
-                (ts, te, pr, sa, sp, da, dp, pkt, byt, in_if, out_if, xsa, xda, real_src, real_dst)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (ts, te, pr, sa, sp, da, dp, pkt, byt, in_if, out_if, xsa, xda, real_src, real_dst))
-            
-            if cursor.rowcount > 0:
-                inserted_count += 1
-                
-        except (ValueError, TypeError, KeyError) as e:
-            # Puedes poner un print aquí temporalmente si necesitas ver qué atributo falla exactamente
-            # print("Error al procesar flujo:", e)
-            continue
 
+def new_files(after_stamp):
+    """Ficheros nfcapd completos con marca de tiempo posterior a after_stamp, ordenados."""
+    found = []
+    for root, _dirs, files in os.walk(NFDUMP_DIR):
+        for name in files:
+            m = FILE_RE.match(name)
+            if m and m.group(1) > after_stamp:
+                found.append((m.group(1), os.path.join(root, name)))
+    found.sort()
+    return found
+
+
+def insert_batch(conn, rows):
+    cur = conn.executemany(INSERT_SQL, rows)
     conn.commit()
-    if inserted_count > 0:
-        print(f"IPFIX: {inserted_count} nuevos flujos procesados.", flush=True)
+    return cur.rowcount
+
+
+def process_file(conn, path, stamp):
+    """Lee UN fichero nfcapd en streaming (línea a línea) e inserta por lotes."""
+    cmd = ['nfdump', '-r', path, '-q', '-N', '-o', NFDUMP_FMT]
+    inserted = 0
+    batch = []
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    try:
+        for line in proc.stdout:
+            row = parse_line(line)
+            if row:
+                batch.append(row)
+                if len(batch) >= BATCH_SIZE:
+                    inserted += insert_batch(conn, batch)
+                    batch = []
+    finally:
+        proc.stdout.close()
+        rc = proc.wait()
+    if batch:
+        inserted += insert_batch(conn, batch)
+    if rc != 0:
+        print(f"IPFIX: nfdump devolvió {rc} al leer {path}", flush=True)
+    # El fichero queda marcado como procesado; si se cae a mitad, se relee y UNIQUE evita duplicados
+    set_state(conn, 'flow_last_file', stamp)
+    conn.commit()
+    return inserted
+
+
+def collect_flows(conn):
+    """Procesa los ficheros nuevos. Devuelve True si quedan más pendientes."""
+    last = get_state(conn, 'flow_last_file')
+    if last is None:
+        last = (datetime.now() - timedelta(minutes=BACKFILL_MINUTES)).strftime('%Y%m%d%H%M')
+
+    pending = new_files(last)
+    todo = pending[:MAX_FILES_PER_CYCLE]
+    total = 0
+    for stamp, path in todo:
+        total += process_file(conn, path, stamp)
+
+    if todo:
+        print(f"IPFIX: {len(todo)} ficheros leídos, {total} flujos nuevos "
+              f"(último: {todo[-1][0]}, pendientes: {len(pending) - len(todo)}).", flush=True)
+    return len(pending) > len(todo)
+
 
 def main():
     conn = init_db()
-    print("Iniciando recolector de flujos IPFIX...", flush=True)
+    print("Iniciando recolector IPFIX (lectura incremental por fichero)...", flush=True)
     while True:
-        collect_flows(conn)
-        time.sleep(POLL_INTERVAL)
+        try:
+            more = collect_flows(conn)
+        except Exception as e:
+            print(f"Error en el ciclo IPFIX: {e}", flush=True)
+            more = False
+        time.sleep(1 if more else POLL_INTERVAL)
+
 
 if __name__ == '__main__':
     main()

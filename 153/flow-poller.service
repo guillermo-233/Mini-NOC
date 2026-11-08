@@ -8,7 +8,10 @@ User=root
 WorkingDirectory=/home/admin
 ExecStart=/home/admin/venv/bin/python3 /home/admin/flow_poller.py
 Restart=always
-RestartSec=5
+RestartSec=30
+MemoryMax=256M
+Nice=10
+IOSchedulingClass=idle
 
 [Install]
 WantedBy=multi-user.target
