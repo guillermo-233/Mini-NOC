@@ -11,6 +11,10 @@ cp "$REPO"/153/static/* "$DEST/static/"
 chown admin:admin "$DEST"/*.py
 chown -R admin:admin "$DEST/static"
 
+# La base de datos debe pertenecer al usuario con el que corren los servicios.
+touch "$DEST/mininuc.db"
+chown root:root "$DEST"/mininuc.db*
+
 cp "$REPO"/153/*.service /etc/systemd/system/
 systemctl daemon-reload
 echo "Desplegado. Reinicia con: systemctl restart snmp-poller syslog-poller flow-poller alert-engine mininuc-api"

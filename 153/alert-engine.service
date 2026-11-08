@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=admin
+User=root
 WorkingDirectory=/home/admin
 ExecStart=/home/admin/venv/bin/python /home/admin/alert_engine.py
 Restart=always
