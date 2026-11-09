@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pysnmp.hlapi.v3arch.asyncio import *
 
@@ -35,7 +36,7 @@ async def get_bulk_snmp(ip, community, base_oid):
     snmpEngine = SnmpEngine()
     results = {}
     target = await UdpTransportTarget.create((ip, 161))
-    
+
     async for errorIndication, errorStatus, errorIndex, varBindTable in walk_cmd(
         snmpEngine, CommunityData(community), target, ContextData(),
         ObjectType(ObjectIdentity(base_oid)), lexicographicMode=False
@@ -58,6 +59,15 @@ async def poll_device(ip, community):
             device_data[idx][key] = value
     return device_data
 
+def _rate(bytes_1, bytes_2, interval_seconds):
+    """bit/s entre dos lecturas de un contador.
+    - Si el contador baja es un reset (reinicio del router): no hay tasa (None),
+      para no dibujar picos gigantes ni tráfico cero falso.
+    - interval_seconds debe ser el tiempo REAL transcurrido entre las dos lecturas."""
+    if bytes_2 < bytes_1 or interval_seconds <= 0:
+        return None
+    return round((bytes_2 - bytes_1) * 8 / interval_seconds, 2)
+
 def calculate_rates(sample1, sample2, interval_seconds):
     rates = {}
     for idx in sample1:
@@ -66,19 +76,15 @@ def calculate_rates(sample1, sample2, interval_seconds):
             in_bytes_2 = int(sample2[idx].get('hc_in_octets', 0))
             out_bytes_1 = int(sample1[idx].get('hc_out_octets', 0))
             out_bytes_2 = int(sample2[idx].get('hc_out_octets', 0))
-            
-            # Las instrucciones exigen que la velocidad marque 0 si el contador se reinicia (sin picos)
-            in_bps = 0.0 if in_bytes_2 < in_bytes_1 else (in_bytes_2 - in_bytes_1) * 8 / interval_seconds
-            out_bps = 0.0 if out_bytes_2 < out_bytes_1 else (out_bytes_2 - out_bytes_1) * 8 / interval_seconds
-            
+
             rates[idx] = {
                 'descr': sample2[idx].get('descr', ''),
                 'admin_status': sample2[idx].get('admin_status', '0'),
                 'oper_status': sample2[idx].get('oper_status', '0'),
                 'in_bytes': in_bytes_2,
                 'out_bytes': out_bytes_2,
-                'in_bps': round(in_bps, 2),
-                'out_bps': round(out_bps, 2)
+                'in_bps': _rate(in_bytes_1, in_bytes_2, interval_seconds),
+                'out_bps': _rate(out_bytes_1, out_bytes_2, interval_seconds)
             }
     return rates
 
@@ -87,24 +93,31 @@ async def main():
     community = 'public'
     interval = 15
     db_conn = init_db()
-    
+
     sample1 = await poll_device(ip, community)
-    
+    t1 = time.monotonic()
+
     while True:
         await asyncio.sleep(interval)
         sample2 = await poll_device(ip, community)
-        rates = calculate_rates(sample1, sample2, interval)
-        
+        t2 = time.monotonic()
+
+        # Se divide por el tiempo REAL entre lecturas, no por el intervalo nominal:
+        # cada ciclo dura algo más de 15 s (espera + tiempo de las consultas SNMP).
+        elapsed = t2 - t1
+        rates = calculate_rates(sample1, sample2, elapsed)
+        t1 = t2
+
         # Almacenamiento con marca de tiempo UTC
         timestamp = datetime.now(timezone.utc).isoformat()
         cursor = db_conn.cursor()
-        
+
         for idx, data in rates.items():
             cursor.execute('''
                 INSERT INTO snmp_data (timestamp, if_index, descr, admin_status, oper_status, in_bytes, out_bytes, in_bps, out_bps)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (timestamp, idx, data['descr'], data['admin_status'], data['oper_status'], data['in_bytes'], data['out_bytes'], data['in_bps'], data['out_bps']))
-        
+
         db_conn.commit()
         sample1 = sample2
 
