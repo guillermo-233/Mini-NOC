@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mini-NOC · Acceso</title>
+    <style>
+        body { font-family: sans-serif; background: #f4f4f4; color: #333; display: flex; justify-content: center; padding-top: 12vh; }
+        .box { background: white; padding: 24px 28px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); width: 300px; }
+        h1 { color: #0056b3; font-size: 1.3em; margin-top: 0; }
+        label { display: block; margin-top: 12px; font-size: 0.9em; }
+        input { width: 100%; box-sizing: border-box; padding: 8px; margin-top: 4px; }
+        button { margin-top: 16px; width: 100%; padding: 9px; background: #0056b3; color: white; border: 0; border-radius: 4px; cursor: pointer; }
+        #msg { margin-top: 12px; color: #a00; font-size: 0.9em; min-height: 1.2em; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>Mini-NOC · Acceso</h1>
+        <label for="u">Usuario</label>
+        <input id="u" autocomplete="username" autofocus>
+        <label for="p">Contraseña</label>
+        <input id="p" type="password" autocomplete="current-password">
+        <button id="go" onclick="login()">Entrar</button>
+        <div id="msg"></div>
+    </div>
+    <script>
+        document.getElementById('p').addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+        async function login() {
+            const msg = document.getElementById('msg');
+            msg.textContent = '';
+            try {
+                const r = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: document.getElementById('u').value,
+                                           password: document.getElementById('p').value })
+                });
+                if (r.ok) { location.href = '/'; return; }
+                const d = await r.json().catch(() => ({}));
+                msg.textContent = d.detail || ('Error ' + r.status);
+            } catch (e) {
+                msg.textContent = 'No se pudo contactar con el servidor.';
+            }
+        }
+    </script>
+</body>
+</html>

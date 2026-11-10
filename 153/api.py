@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 import datetime
 from datetime import datetime, timedelta, timezone
@@ -9,13 +8,10 @@ import subprocess
 
 app = FastAPI(title="Mini-NOC API")
 
-# Permitir CORS para que la interfaz web (HTML/JS) pueda consumir la API
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Sin CORS: la interfaz se sirve desde este mismo origen. Dejar allow_origins=["*"] con sesiones por cookie
+# permitiría a cualquier web consultar la API con la sesión del operador.
+import auth
+auth.install(app)     # login, logout, /api/me y middleware que exige sesión (debe ir antes del mount de estáticos)
 
 DB_FILE = '/home/admin/mininuc.db'
 
@@ -280,4 +276,8 @@ app.mount("/", StaticFiles(directory="/home/admin/static", html=True), name="sta
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    # HTTPS opcional: definir NOC_TLS_CERT y NOC_TLS_KEY (y NOC_COOKIE_SECURE=1) en el servicio.
+    tls = {}
+    if os.environ.get("NOC_TLS_CERT") and os.environ.get("NOC_TLS_KEY"):
+        tls = {"ssl_certfile": os.environ["NOC_TLS_CERT"], "ssl_keyfile": os.environ["NOC_TLS_KEY"]}
+    uvicorn.run(app, host="0.0.0.0", port=8080, **tls)

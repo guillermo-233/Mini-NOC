@@ -37,6 +37,10 @@
 </head>
 <body>
 
+    <div style="float:right; font-size:0.9em;">
+        <span id="whoami"></span>
+        <button onclick="logout()">Salir</button>
+    </div>
     <h1>Mini-NOC Dashboard</h1>
 
     <!-- Panel de Salud del Sistema (Standard Level) -->
@@ -160,6 +164,21 @@
     </div>
 
     <script>
+        // Si la sesión caduca, cualquier petición devuelve 401: se vuelve a la pantalla de login.
+        const _fetch = window.fetch.bind(window);
+        window.fetch = async (...args) => {
+            const r = await _fetch(...args);
+            if (r.status === 401 && !String(args[0]).includes('/api/login')) location.href = '/login.html';
+            return r;
+        };
+        async function logout() {
+            await fetch('/api/logout', { method: 'POST' });
+            location.href = '/login.html';
+        }
+        fetch('/api/me').then(r => r.json()).then(d => {
+            document.getElementById('whoami').textContent = d.user ? `Usuario: ${d.user} ` : '';
+        });
+
         let charts = {};
         let timelineChartInstance = null; // Variable para la nueva gráfica
 
