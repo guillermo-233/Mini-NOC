@@ -217,10 +217,16 @@ def get_timeline(timestamp: str, window: int = 5):
         # Asegurar compatibilidad de formato ISO para la conversión y corregir espacios
         center_time_str = timestamp.replace('Z', '+00:00').replace(' ', '+')
         center_time = datetime.fromisoformat(center_time_str)
+        if center_time.tzinfo is None:
+            center_time = center_time.replace(tzinfo=timezone.utc)  # sin zona: se asume UTC
+        center_time = center_time.astimezone(timezone.utc)  # los datos se guardan en UTC
         
         # Calcular el marco temporal (rango inicio y fin)
         start_time = (center_time - timedelta(minutes=window)).isoformat()
         end_time = (center_time + timedelta(minutes=window)).isoformat()
+        # Los flujos guardan ts como 'YYYY-MM-DD HH:MM:SS.mmm' (UTC, sin zona): se compara en ese mismo formato
+        flow_start = start_time[:19].replace('T', ' ')
+        flow_end = end_time[:19].replace('T', ' ')
         
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row  # Necesario para convertir registros a diccionarios
@@ -239,8 +245,8 @@ def get_timeline(timestamp: str, window: int = 5):
         
         # Extraer datos de Flujos (usando 'ts' en lugar de 'timestamp')
         flow_data = conn.execute(
-            'SELECT * FROM flow_data WHERE ts BETWEEN ? AND ? ORDER BY ts ASC', 
-            (start_time, end_time)
+            'SELECT * FROM flow_data WHERE ts BETWEEN ? AND ? ORDER BY ts ASC LIMIT 2000',
+            (flow_start, flow_end)
         ).fetchall()
         
         conn.close()
@@ -265,6 +271,8 @@ def get_timeline(timestamp: str, window: int = 5):
 
 from alerts_api import router as alerts_router
 app.include_router(alerts_router)
+from flows_api import router as flows_router
+app.include_router(flows_router)
 
 app.mount("/", StaticFiles(directory="/home/admin/static", html=True), name="static")
 
