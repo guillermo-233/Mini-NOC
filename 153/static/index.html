@@ -233,7 +233,12 @@
             if (data.syslog && data.syslog.length > 0) {
                 data.syslog.forEach(log => {
                     const li = document.createElement('li');
-                    li.innerHTML = `<strong>${formatLocalTime(log.timestamp)}</strong> <span style="color: #dc3545;">[${log.severity}]</span> - ${log.message}`;
+                    const when = document.createElement('strong');
+                    when.textContent = formatLocalTime(log.timestamp);
+                    const sev = document.createElement('span');
+                    sev.style.color = '#dc3545';
+                    sev.textContent = `[${log.severity}]`;
+                    li.append(when, ' ', sev, ` - ${log.message}`);
                     eventsList.appendChild(li);
                 });
             } else {
@@ -309,7 +314,11 @@
                     freshnessDiv.textContent = `Frescura: ${formatLocalTime(result.freshness)}`;
                     result.data.forEach(row => {
                         const tr = document.createElement('tr');
-                        tr.innerHTML = `<td>${formatLocalTime(row.ts)}</td><td>${row.host}</td><td>${row.tag}</td><td>${row.message}</td>`;
+                        [formatLocalTime(row.ts), row.host, row.tag, row.message].forEach(text => {
+                            const td = document.createElement('td');
+                            td.textContent = text;
+                            tr.appendChild(td);
+                        });
                         tableBody.appendChild(tr);
                     });
                 }
@@ -395,5 +404,6 @@
     </script>
     <script src="alerts.js"></script>
     <script src="flows.js"></script>
+    <script src="logs.js"></script>
 </body>
 </html>

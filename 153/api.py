@@ -273,6 +273,8 @@ from alerts_api import router as alerts_router
 app.include_router(alerts_router)
 from flows_api import router as flows_router
 app.include_router(flows_router)
+from logs_api import router as logs_router
+app.include_router(logs_router)
 
 app.mount("/", StaticFiles(directory="/home/admin/static", html=True), name="static")
 
