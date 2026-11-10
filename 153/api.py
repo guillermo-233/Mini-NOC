@@ -271,6 +271,8 @@ from flows_api import router as flows_router
 app.include_router(flows_router)
 from logs_api import router as logs_router
 app.include_router(logs_router)
+from device_api import router as device_router
+app.include_router(device_router)
 
 app.mount("/", StaticFiles(directory="/home/admin/static", html=True), name="static")
 
