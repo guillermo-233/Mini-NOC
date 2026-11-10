@@ -4,11 +4,13 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pysnmp.hlapi.v3arch.asyncio import *
+from snmp_auth import build_auth, describe_auth, get_engine
 
 DB_FILE = '/home/admin/mininuc.db'
 DEVICE_IP = '192.168.153.1'
-COMMUNITY = 'public'
 INTERVAL = 15
+# La credencial SNMP (v2c por defecto, v3 authPriv si SNMP_VERSION=3) se construye en main() con
+# snmp_auth.build_auth(): las claves NO están en el código, vienen del entorno (/etc/mini-noc.env).
 
 OIDS = {
     'descr': '1.3.6.1.2.1.2.2.1.2',
@@ -95,16 +97,19 @@ def record_device_status(conn, device, now_iso, reachable, uptime_seconds, error
     conn.commit()
 
 
-async def get_bulk_snmp(ip, community, base_oid):
-    snmpEngine = SnmpEngine()
+async def get_bulk_snmp(ip, auth, base_oid):
+    """Recorre un OID. `auth` es el objeto de credenciales de PySNMP: CommunityData (v2c) o UsmUserData (v3)."""
+    snmpEngine = get_engine()   # un solo motor SNMP compartido (en v3 evita repetir el descubrimiento)
     results = {}
     target = await UdpTransportTarget.create((ip, 161))
 
     async for errorIndication, errorStatus, errorIndex, varBindTable in walk_cmd(
-        snmpEngine, CommunityData(community), target, ContextData(),
+        snmpEngine, auth, target, ContextData(),
         ObjectType(ObjectIdentity(base_oid)), lexicographicMode=False
     ):
         if errorIndication or errorStatus:
+            # Antes se ignoraba en silencio: con una credencial mala no había datos y nadie sabía por qué.
+            print(f"SNMP error ({base_oid}): {errorIndication or errorStatus}", flush=True)
             break
         for varBind in varBindTable:
             oid, value = varBind
@@ -113,10 +118,10 @@ async def get_bulk_snmp(ip, community, base_oid):
     return results
 
 
-async def poll_device(ip, community):
+async def poll_device(ip, auth):
     device_data = {}
     for key, oid in OIDS.items():
-        data = await get_bulk_snmp(ip, community, oid)
+        data = await get_bulk_snmp(ip, auth, oid)
         for idx, value in data.items():
             if idx not in device_data:
                 device_data[idx] = {}
@@ -124,10 +129,10 @@ async def poll_device(ip, community):
     return device_data
 
 
-async def poll_uptime(ip, community):
+async def poll_uptime(ip, auth):
     """sysUpTime del router en segundos, o None si no se pudo leer."""
     try:
-        data = await get_bulk_snmp(ip, community, SYSUPTIME_OID)
+        data = await get_bulk_snmp(ip, auth, SYSUPTIME_OID)
     except Exception:
         return None
     for value in data.values():
@@ -137,11 +142,11 @@ async def poll_uptime(ip, community):
     return None
 
 
-async def poll_and_record_status(conn, ip, community, sample, error=None):
+async def poll_and_record_status(conn, ip, auth, sample, error=None):
     """Registra si el router respondió en este sondeo (sample vacío = sin respuesta)."""
     now_iso = datetime.now(timezone.utc).isoformat()
     if sample:
-        uptime = await poll_uptime(ip, community)
+        uptime = await poll_uptime(ip, auth)
         record_device_status(conn, ip, now_iso, True, uptime, None)
     else:
         record_device_status(conn, ip, now_iso, False, None, error or 'sin respuesta SNMP')
@@ -178,24 +183,28 @@ def calculate_rates(sample1, sample2, interval_seconds):
     return rates
 
 
-async def safe_poll(ip, community):
+async def safe_poll(ip, auth):
     """Un fallo de red no debe tumbar el servicio: se registra como 'sin respuesta'."""
     try:
-        return await poll_device(ip, community), None
+        return await poll_device(ip, auth), None
     except Exception as e:
         return {}, f'error en el sondeo: {e}'
 
 
 async def main():
+    # Si SNMP_VERSION=3 y falta algo de la configuración, esto lanza ValueError y el servicio falla de forma
+    # visible en el log (no se vuelve a v2c en silencio).
+    auth = build_auth()
+    print(f"Credencial SNMP: {describe_auth()}", flush=True)
     db_conn = init_db()
 
-    sample1, error = await safe_poll(DEVICE_IP, COMMUNITY)
+    sample1, error = await safe_poll(DEVICE_IP, auth)
     t1 = time.monotonic()
-    await poll_and_record_status(db_conn, DEVICE_IP, COMMUNITY, sample1, error)
+    await poll_and_record_status(db_conn, DEVICE_IP, auth, sample1, error)
 
     while True:
         await asyncio.sleep(INTERVAL)
-        sample2, error = await safe_poll(DEVICE_IP, COMMUNITY)
+        sample2, error = await safe_poll(DEVICE_IP, auth)
         t2 = time.monotonic()
 
         # Se divide por el tiempo REAL entre lecturas, no por el intervalo nominal:
@@ -215,7 +224,7 @@ async def main():
             ''', (timestamp, idx, data['descr'], data['admin_status'], data['oper_status'], data['in_bytes'], data['out_bytes'], data['in_bps'], data['out_bps']))
 
         db_conn.commit()
-        await poll_and_record_status(db_conn, DEVICE_IP, COMMUNITY, sample2, error)
+        await poll_and_record_status(db_conn, DEVICE_IP, auth, sample2, error)
         sample1 = sample2
 
 

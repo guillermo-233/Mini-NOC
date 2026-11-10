@@ -3,6 +3,7 @@ Description=Mini-NOC SNMP Poller
 After=network.target
 
 [Service]
+EnvironmentFile=-/etc/mini-noc.env
 Type=simple
 User=root
 WorkingDirectory=/home/admin
