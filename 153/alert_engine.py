@@ -1,4 +1,6 @@
+import os
 import sqlite3
+import subprocess
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -140,27 +142,124 @@ def check_syslog_failures():
         if source_ip not in current_failing_hosts:
             resolve_alert(alert_id, source_ip)
 
+# ---------------------------------------------------------------------------
+# Datos obsoletos: una fuente que no produce datos nuevos durante demasiado tiempo.
+# Segundos sin datos antes de alertar; se pueden cambiar con las variables de entorno
+# NOC_STALE_SNMP, NOC_STALE_IPFIX y NOC_STALE_SYSLOG (0 u "off" desactiva la regla de esa fuente).
+# Syslog viene desactivado: el router solo envía logs cuando ocurre algo y puede pasar días en
+# silencio sin que haya ningún fallo. Su salud se vigila con la regla "Collector Down".
+# ---------------------------------------------------------------------------
+STALE_SOURCES = [
+    # (entidad, nombre corto, tabla, columna de tiempo, formato, umbral por defecto en s, variable de entorno)
+    ('SNMP Poller', 'SNMP', 'snmp_data', 'timestamp', 'iso', 180, 'NOC_STALE_SNMP'),
+    ('IPFIX Collector', 'IPFIX', 'flow_data', 'ts', 'flow', 300, 'NOC_STALE_IPFIX'),
+    ('Syslog Collector', 'Syslog', 'syslog_data', 'timestamp', 'iso', 0, 'NOC_STALE_SYSLOG'),
+]
+
+# Servicios recolectores cuya parada se alerta, y evaluaciones seguidas necesarias para confirmarla
+# (evita avisos falsos mientras un servicio se reinicia durante un despliegue).
+COLLECTOR_SERVICES = ['snmp-poller', 'syslog-poller', 'flow-poller']
+DOWN_CONFIRMATIONS = 2
+_down_counts = {}
+
+
+def stale_threshold(default, env_name):
+    """Umbral en segundos: el valor por defecto o el de la variable de entorno. 0 = regla desactivada."""
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return default
+    raw = raw.strip().lower()
+    if raw in ('', '0', 'off', 'no'):
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
+
+
+def format_duration(seconds):
+    seconds = int(seconds)
+    if seconds < 90:
+        return f"{seconds} s"
+    minutes = seconds // 60
+    if minutes < 90:
+        return f"{minutes} min"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 48:
+        return f"{hours} h {minutes} min" if minutes else f"{hours} h"
+    days, hours = divmod(hours, 24)
+    return f"{days} d {hours} h" if hours else f"{days} d"
+
+
+def last_data_time(table, column, fmt):
+    """Momento (UTC) del dato más reciente de una tabla, o None si no hay ninguno o la tabla no existe."""
+    try:
+        with get_db_connection() as conn:
+            value = conn.execute(f"SELECT MAX({column}) FROM {table}").fetchone()[0]
+    except sqlite3.OperationalError:
+        return None
+    if not value:
+        return None
+    if fmt == 'flow':       # 'YYYY-MM-DD HH:MM:SS.mmm', UTC sin zona
+        return datetime.strptime(value[:19], '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def check_no_data():
     rule_name = "No Data"
     active_alerts = get_active_alerts(rule_name)
-    entity = "SNMP Poller"
-    threshold = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
-    
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT COUNT(*) 
-            FROM snmp_data 
-            WHERE timestamp >= ?
-        ''', (threshold,))
-        recent_count = cursor.fetchone()[0]
-        
-    if recent_count == 0:
-        if entity not in active_alerts:
-            trigger_alert(rule_name, "CRITICAL", entity, "No se han recibido métricas SNMP en los últimos 3 minutos.")
-    else:
-        if entity in active_alerts:
-            resolve_alert(active_alerts[entity], entity)
+    now = datetime.now(timezone.utc)
+
+    for entity, label, table, column, fmt, default, env_name in STALE_SOURCES:
+        limit = stale_threshold(default, env_name)
+        if limit <= 0:
+            # Regla desactivada para esta fuente: no se deja ninguna alerta colgada
+            if entity in active_alerts:
+                resolve_alert(active_alerts[entity], entity)
+            continue
+
+        last = last_data_time(table, column, fmt)
+        age = (now - last).total_seconds() if last else None
+
+        if age is None or age > limit:
+            if entity not in active_alerts:
+                if age is None:
+                    message = f"No hay ningún dato de {label} en la base de datos (umbral: {format_duration(limit)})."
+                else:
+                    message = (f"No se reciben datos de {label} desde hace {format_duration(age)} "
+                               f"(umbral: {format_duration(limit)}). Último dato: {last.strftime('%Y-%m-%d %H:%M:%S')} UTC.")
+                trigger_alert(rule_name, "CRITICAL", entity, message)
+        else:
+            if entity in active_alerts:
+                resolve_alert(active_alerts[entity], entity)
+
+
+def service_state(name):
+    """Estado del servicio systemd (active / inactive / failed / unknown si no se puede consultar)."""
+    try:
+        r = subprocess.run(['systemctl', 'is-active', f'{name}.service'], capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() or 'unknown'
+    except Exception:
+        return 'unknown'
+
+
+def check_collectors_down():
+    """Alerta si un servicio recolector no está en marcha. Es la forma de vigilar syslog, cuyo silencio es normal."""
+    rule_name = "Collector Down"
+    active_alerts = get_active_alerts(rule_name)
+    for service in COLLECTOR_SERVICES:
+        state = service_state(service)
+        if state == 'unknown':
+            continue                      # no se pudo consultar: ni se dispara ni se resuelve
+        if state != 'active':
+            _down_counts[service] = _down_counts.get(service, 0) + 1
+            if _down_counts[service] >= DOWN_CONFIRMATIONS and service not in active_alerts:
+                trigger_alert(rule_name, "CRITICAL", service, f"El servicio {service} no está en marcha (estado: {state}).")
+        else:
+            _down_counts[service] = 0
+            if service in active_alerts:
+                resolve_alert(active_alerts[service], service)
 
 def enforce_retention():
     """Borra automáticamente los datos de más de 7 días (Standard Level)."""
@@ -184,18 +283,20 @@ def enforce_retention():
     except Exception as e:
         print(f"[Retention Error] {e}", flush=True)
 
+def run_checks(checks):
+    """Ejecuta cada regla por separado: si una falla, las demás se siguen evaluando."""
+    for check in checks:
+        try:
+            check()
+        except Exception as e:
+            print(f"Error en {check.__name__}: {e}", flush=True)
+
 def run_engine():
-    print("Iniciando Motor de Alertas...")
+    print("Iniciando Motor de Alertas...", flush=True)
     init_db()
     while True:
-        try:
-            check_interface_status()
-            check_high_bandwidth()
-            check_syslog_failures()
-            check_no_data()
-            enforce_retention()
-        except Exception as e:
-            print(f"Error en el ciclo de evaluación: {e}")
+        run_checks([check_interface_status, check_high_bandwidth, check_syslog_failures,
+                    check_no_data, check_collectors_down, enforce_retention])
         time.sleep(30)
 
 if __name__ == "__main__":
