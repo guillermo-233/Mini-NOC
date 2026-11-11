@@ -86,33 +86,59 @@ def check_interface_status():
             if descr in active_alerts:
                 resolve_alert(active_alerts[descr], descr)
 
+# ---------------------------------------------------------------------------
+# Ancho de banda: alerta cuando el tráfico de una interfaz está POR ENCIMA del umbral durante N minutos.
+# "Durante N minutos" significa que TODAS las muestras de la ventana superan el umbral (un pico corto no
+# dispara la alerta) y que hay suficientes muestras (si el poller falla no se concluye nada).
+# Configurable con las variables de entorno NOC_BW_THRESHOLD_BPS (bit/s) y NOC_BW_MINUTES.
+# ---------------------------------------------------------------------------
+BW_DEFAULT_THRESHOLD_BPS = 80_000_000      # 80 Mbit/s (bit/s son unidades decimales)
+BW_DEFAULT_MINUTES = 2
+BW_POLL_SECONDS = 15                       # intervalo nominal de muestreo del poller SNMP
+BW_MIN_SAMPLE_RATIO = 0.6                  # fracción mínima de las muestras esperadas para evaluar la ventana
+
+
+def positive_int_env(name, default):
+    """Entero positivo de una variable de entorno; si falta o no es válido, el valor por defecto."""
+    try:
+        value = int(os.environ.get(name, '').strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 def check_high_bandwidth():
     rule_name = "High Bandwidth"
     active_alerts = get_active_alerts(rule_name)
-    threshold_bps = 80 * 1024 * 1024 # 80 Mbps
-    threshold_time = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
-    
+    threshold = positive_int_env('NOC_BW_THRESHOLD_BPS', BW_DEFAULT_THRESHOLD_BPS)
+    minutes = positive_int_env('NOC_BW_MINUTES', BW_DEFAULT_MINUTES)
+    needed = max(2, int(minutes * 60 / BW_POLL_SECONDS * BW_MIN_SAMPLE_RATIO))
+    since = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
     with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT descr, AVG(in_bps) as avg_in, AVG(out_bps) as avg_out
-            FROM snmp_data 
+        rows = conn.execute('''
+            SELECT descr,
+                   COUNT(in_bps),  MIN(in_bps),  AVG(in_bps),
+                   COUNT(out_bps), MIN(out_bps), AVG(out_bps)
+            FROM snmp_data
             WHERE timestamp >= ?
             GROUP BY descr
-        ''', (threshold_time,))
-        traffic_data = cursor.fetchall()
-        
-    current_high_traffic_entities = set()
-    for descr, avg_in, avg_out in traffic_data:
-        in_bps = avg_in or 0
-        out_bps = avg_out or 0
-        if (in_bps > threshold_bps) or (out_bps > threshold_bps):
-            current_high_traffic_entities.add(descr)
+        ''', (since,)).fetchall()
+
+    for descr, n_in, min_in, avg_in, n_out, min_out, avg_out in rows:
+        directions = (('entrada', n_in, min_in, avg_in), ('salida', n_out, min_out, avg_out))
+        sustained = [(name, low, avg) for name, n, low, avg in directions if n >= needed and low > threshold]
+
+        if sustained:
             if descr not in active_alerts:
-                max_traffic_mbps = max(in_bps, out_bps) / (1024 * 1024)
-                trigger_alert(rule_name, "WARNING", descr, f"Tráfico elevado en {descr}: {max_traffic_mbps:.2f} Mbps sostenido.")
-        else:
-            if descr in active_alerts:
+                detail = ', '.join(f"{name}: mínimo {low / 1e6:.2f} y media {avg / 1e6:.2f} Mbit/s" for name, low, avg in sustained)
+                trigger_alert(rule_name, "WARNING", descr,
+                              f"Tráfico por encima de {threshold / 1e6:.2f} Mbit/s durante {minutes} min en {descr} ({detail}).")
+        elif descr in active_alerts:
+            # Se resuelve cuando la media de la ventana vuelve a estar por debajo del umbral (evita parpadeos);
+            # si no hay muestras suficientes no se sabe nada y se mantiene el estado.
+            measured = [avg for _name, n, _low, avg in directions if n >= needed]
+            if measured and all(avg <= threshold for avg in measured):
                 resolve_alert(active_alerts[descr], descr)
 
 def check_syslog_failures():
