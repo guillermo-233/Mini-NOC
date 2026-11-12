@@ -15,6 +15,8 @@ chown -R admin:admin "$DEST/static"
 touch "$DEST/mininuc.db"
 chown root:root "$DEST"/mininuc.db*
 
-cp "$REPO"/153/*.service /etc/systemd/system/
+shopt -s nullglob
+cp "$REPO"/153/*.service "$REPO"/153/*.timer /etc/systemd/system/
 systemctl daemon-reload
+systemctl enable --now nfcapd-cleanup.timer
 echo "Desplegado. Reinicia con: systemctl restart snmp-poller syslog-poller flow-poller alert-engine mininuc-api"

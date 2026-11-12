@@ -1,0 +1,9 @@
+[Unit]
+Description=Mini-NOC: purga de ficheros nfcapd antiguos
+
+[Service]
+Type=oneshot
+User=root
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/bin/python3 /home/admin/nfcapd_cleanup.py

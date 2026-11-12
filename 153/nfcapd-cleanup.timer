@@ -1,0 +1,9 @@
+[Unit]
+Description=Purga diaria de nfcapd (7 días)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
