@@ -1,0 +1,39 @@
+MINI-NOC - INFORMACIÓN PARA LA EVALUACIÓN
+==========================================
+
+URL DE ACCESO AL MINI-NOC (front-end web)
+-----------------------------------------
+  http://192.168.153.4:8080
+  (máquina d13-basic-153; accesible desde la red del laboratorio)
+  Acceso con usuario y contraseña:
+  Para crear otro usuario(contraseña mínimo 10 caracteres):  cd /home/admin && python3 create_user.py
+
+DIRECTORIOS DE TRABAJO
+----------------------
+Máquina d13-basic-153 (192.168.153.4) - el Mini-NOC en producción:
+  /home/admin/                      código desplegado (*.py) y base de datos mininuc.db
+  /home/admin/static/               interfaz web (HTML, JS, Chart.js local, sin CDNs)
+  /home/admin/venv/                 entorno virtual de Python (API)
+  /etc/systemd/system/              servicios: snmp-poller, syslog-poller, flow-poller,
+                                    alert-engine, mininuc-api; y nfcapd-cleanup (.service/.timer)
+  /var/log/remote/192.168.153.1/    syslog recibido del router (rsyslog)
+  /var/cache/nfdump/mikrotik/       flujos IPFIX recibidos (nfcapd)
+  ~/mini-noc/                       clon del repositorio Git (de aquí se despliega con ./deploy.sh)
+
+Máquina d13-basic-154 (192.168.154.3) - generador de incidentes:
+  ~/mini-noc/154/chaos.sh si el repositorio está clonado, script de caos (uso: ROUTER_PASS='...' ./chaos.sh [fase])
+
+REPOSITORIO GITHUB
+------------------
+  https://github.com/guillermo-233/Mini-NOC
+  153/                      código del Mini-NOC y sus tests
+  154/chaos.sh              script de caos
+  deploy.sh                 despliegue a /home/admin e instalación de servicios
+  mini_noc_readme.md        instalación y uso
+  design_document.md        documento de diseño
+  verification_report.md    informe de verificación (capturas en evidence/)
+  AI log.docx               registro del uso de IA
+
+SERVICIOS
+---------
+  systemctl status snmp-poller syslog-poller flow-poller alert-engine mininuc-api
