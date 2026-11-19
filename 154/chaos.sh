@@ -14,7 +14,7 @@ set -u
 ROUTER_IP="${ROUTER_IP:-192.168.153.1}"
 ROUTER_USER="${ROUTER_USER:-admin}"
 : "${ROUTER_PASS:?Define ROUTER_PASS (contraseña del router) en el entorno}"
-SERVER_URL="${SERVER_URL:-http://192.168.153.4:8000/test100M.bin}"
+SERVER_URL="${SERVER_URL:-http://192.168.153.4:587/test100M.bin}"
 FILE_BYTES="${FILE_BYTES:-104857600}"
 RATE="${RATE:-1m}"                  # límite de wget: 1 MB/s = ~8,4 Mbit/s
 FAILED_LOGINS="${FAILED_LOGINS:-8}"
