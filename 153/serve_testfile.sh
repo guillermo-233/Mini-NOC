@@ -1,7 +1,7 @@
 #!/bin/bash
 # Sirve un fichero de 100 MiB en 192.168.153.4:8000 para la fase "traffic" de chaos.sh.
 # Uso: ./serve_testfile.sh start|stop|status
-DIR=/tmp/noc-testfile; PIDF=/tmp/noc-testfile.pid; BIND=192.168.153.4; PORT=8000
+DIR=/tmp/noc-testfile; PIDF=/tmp/noc-testfile.pid; BIND=192.168.153.4; PORT=${PORT:-8000}
 case "${1:-status}" in
   start)
     mkdir -p "$DIR"; [ -f "$DIR/test100M.bin" ] || dd if=/dev/urandom of="$DIR/test100M.bin" bs=1M count=100 status=none
